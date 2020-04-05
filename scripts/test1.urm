@@ -1,0 +1,17 @@
+# -*-python-*-
+import argparse
+import pprint
+import sys
+
+if __name__ == '__main__':
+   parser = argparse.ArgumentParser(description='test1')
+   parser.add_argument('--dump', action='store_true',
+                       default=False, help='Dump some information')
+   args = parser.parse_args()
+
+   if args.dump:
+      print('sys.argv=%s __name__=%s' % (repr(sys.argv), __name__))
+      b = -4
+      a = !yes | head {b}
+      print(a)
+      !!whoami
