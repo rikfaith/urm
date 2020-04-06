@@ -121,14 +121,18 @@ class Ssh():
 
         # Is this a valid DNS name?
         if not is_ip_address:
+            # pylint: disable=broad-except
             resolver = dns.resolver.Resolver()
             resolver.timeout = self.timeout
             resolver.lifetime = self.timeout
             try:
                 resolver.query(self.target, 'A')
-            except Exception as exception:
+            except dns.resolver.NXDOMAIN as exception:
                 self.FATAL('cannot resolve %s: %s', self.target,
                            str(exception))
+            except Exception as exception:
+                self.FATAL('cannot resolve %s: %s (%s)', self.target,
+                           str(exception), type(exception))
 
     @staticmethod
     def format_exception(prefix, msg):
@@ -142,6 +146,7 @@ class Ssh():
         return prefix + ': ' + msg + ' (%s)' % stack
 
     def _try_connect(self, target, username, port, password=None):
+        # pylint: disable=broad-except
         prefix = 'cannot connect to %s:%d as %s' % (target, port, username)
         try:
             self.client.connect(target, username=username, password=password,
@@ -162,6 +167,7 @@ class Ssh():
                                          'could not open channel (%d): %s' %
                                          (exception.code, exception.text))
         except Exception as exception:
+            prefix += ' (%s)' % type(exception)
             return self.format_exception(prefix, str(exception))
         return None
 
