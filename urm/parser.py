@@ -34,7 +34,7 @@ class Parser():
 
     def _wrap_text(self, input_text):
         output_text = '''\
-_ssh_ = urm.ssh.Ssh(target, unique_target, config_dict, queue, debug=%s)
+_ssh_ = urm.ssh.Ssh(target, unique_target, config_dict, mqueue, debug=%s)
 
 ''' % self.debug
         eof_line = None
