@@ -1,0 +1,624 @@
+# -*-python-*-
+import argparse
+import os
+import re
+import subprocess
+#import time
+
+class Install():
+    def bash(self):
+        '''Add custom aliases and bindings to global /etc/bash.bashrc.'''
+        # Use "debconf-show dash" to see selections
+        !!debconf-set-selections <<EOF
+dash dash/sh boolean false
+EOF
+        !!DEBIAN_FRONTEND=noninteractive dpkg-reconfigure dash
+        tag = !fgrep 'LESS=' /etc/bash.bashrc
+        if len(tag) != 0:
+            print('Customization already done')
+            return
+        !!cp -p /etc/bash.bashrc /etc/bash.bashrc.urm-$(date +%Y%m%d%H%M%S)
+        !!tee -a /etc/bash.bashrc <<EOF
+export LESS='diMfX'
+alias ls='ls -a'
+alias ll='ls -la'
+alias df='df -h'
+alias du='du -h'
+bind '"\M-p": history-search-backward'
+bind '"\ep": history-search-backward'
+bind '"\M-n": history-search-forward'
+bind '"\en": history-search-forward'
+EOF
+
+    def localapt(self):
+        '''Use local apt cache.'''
+        apt = !S {apt}
+        if apt is None:
+            print('apt is not set')
+            return
+        tag = !grep '^deb.*{apt}' /etc/apt/sources.list
+        if len(tag) != 0:
+            print('Customization already done')
+            return
+        !!cp -p /etc/apt/sources.list /etc/apt/sources.list.urm-$(date +%Y%m%d%H%M%S)
+        !!tee /etc/apt/sources.list <<EOF
+deb http://{apt}/ftp.us.debian.org/debian/ sid main contrib non-free
+deb-src http://{apt}/ftp.us.debian.org/debian/ sid main contrib non-free
+# Required for dependencies missing post-buster: wicd-gtk
+deb http://{apt}/ftp.us.debian.org/debian/ buster main contrib non-free
+EOF
+
+    def upgrade(self):
+        !!apt-get -y update
+        !!apt -y autoremove
+        !!DEBIAN_FRONTEND=noninteractive apt-get -yq upgrade
+        !!DEBIAN_FRONTEND=noninteractive apt-get -yq dist-upgrade
+        !!apt -y autoremove
+
+    def _apt_install(self, tools):
+        !!apt-get -y update
+        for tool in tools:
+            !!DEBIAN_FRONTEND=noninteractive apt-get install -yq {tool}
+        !!apt -y autoremove
+
+    def x11common(self):
+        tools = [
+            "x11-common",
+            "x11-apps",
+            "chromium",
+            "dclock",
+            "evince",
+            "firefox-esr",
+            "fvwm",
+            "ghostscript",
+            "gv",
+            "hexchat",
+            "mesa-utils",
+            "mplayer",
+            "ssh-askpass-fullscreen",
+            "telegram-desktop",
+            "t1-xfree86-nonfree",
+            "ttf-xfree86-nonfree",
+            "vlc",
+            "xfonts-100dpi",
+            "xfonts-100dpi-transcoded",
+            "xfonts-75dpi",
+            "xfonts-75dpi-transcoded",
+            "xfonts-terminus",
+            "xinit",
+            "xinput",
+            "xterm",
+            "xpdf",
+        ]
+        self._apt_install(tools)
+
+    def fonts(self):
+        tools = [
+            "fonts-cantarell",
+            "fonts-dejavu"
+            "fonts-dejavu-extra"
+            "fonts-droid-fllback",
+            "fonts-liberation",
+            "fonts-freefont-ttf",
+            "fonts-inconsolata",
+            "fonts-terminus-orb",
+            "fonts-vlgothic",
+        ]
+        self._apt_install(tools)
+
+    def x11laptop(self):
+        tools = [
+            "xserver-xorg",
+            "xserver-xorg-video-intel",
+            "xserver-xorg-video-nvidia",
+            "stalonetray",
+            "wicd-gtk",
+        ]
+        self._apt_install(tools)
+        self.x11common()
+
+    def laptop(self):
+        # Update initramfs to make sure option is used at boot.
+        !!tee /etc/modprobe.d/psmouse.conf <<EOF
+options psmouse proto=imps
+EOF
+        !!update-initramfs -u
+        tools = [
+            "acpi",
+            "acpid",
+            "alsa-utils",
+            "pm-utils",
+        ]
+        self._apt_install(tools)
+        !!tee /etc/acpi/local.sh <<EOF
+#!/bin/bash
+logger ACPI_EVENT $1 $2 $3 $(acpi)
+
+BLDIR=/sys/class/backlight/intel_backlight
+if [[ "$2" == "BRTDN" ]]; then
+    current=$(cat $BLDIR/actual_brightness)
+    max=$(cat $BLDIR/max_brightness)
+    delta=$(($max/10))
+    if [[ $delta -ge $(($current/2)) ]]; then
+        delta=$(($delta/10))
+    fi
+    if [[ $current -lt 20 ]]; then
+        delta=1
+    fi
+    new=$(($current-$delta))
+    if [[ $new -lt 0 ]]; then
+        new=0
+    fi
+    logger "BRIGHTNESS=$new"
+    echo $new > $BLDIR/brightness
+fi
+if [[ "$2" == "BRTUP" ]]; then
+    current=$(cat $BLDIR/actual_brightness)
+    max=$(cat $BLDIR/max_brightness)
+    new=$(($current+$max/20))
+    if [[ $new -gt $max ]]; then
+        new=$max
+    fi
+    logger "BRIGHTNESS=$new"
+    echo $new > $BLDIR/brightness
+fi
+if [[ "$2" == "F20" ]]; then
+    amixer -c 0 sset 'Capture',0 toggle
+fi
+if [[ "$2" == "MUTE" ]]; then
+    amixer -c 0 sset 'Master',0 toggle
+fi
+if [[ "$2" == "VOLDN" ]]; then
+    amixer -c 0 sset 'Master',0 '5%-'
+fi
+if [[ "$2" == "VOLUP" ]]; then
+    amixer -c 0 sset 'Master',0 '10%+'
+fi
+if [[ "$2" == "VMOD" ]]; then
+fi
+EOF
+        !!chmod 755 /etc/acpi/local.sh
+        !!tee /etc/acpi/events/local-battery <<EOF
+event=battery.*
+action=/etc/acpi/local.sh %e
+EOF
+        !!tee /etc/acpi/events/local-button <<EOF
+event=button
+action=/etc/acpi/local.sh %e
+EOF
+        !!tee /etc/acpi/events/local-video <<EOF
+event=video
+action=/etc/acpi/local.sh %e
+EOF
+        !!tee /etc/rc.local <<EOF
+loadkeys /etc/keymap.local
+EOF
+        !!tee /etc/keymap.local <<EOF
+keymaps 0-127
+keycode 58 = Control
+keycode 125 = grave
+shift keycode 125 = asciitilde
+keycode 41 = Escape
+keycode 29 = Alt
+EOF
+        # Disable network configuration at boot
+        !!cp -p /etc/default/networking /etc/default/networking.urm-$(date +%Y%m%d%H%M%S)
+        !!sed -i 's,.*EXCLUDED_INTERFACES=.*,EXCLUDED_INTERFACES="br0 eth0 wlan0",' /etc/default/networking
+        
+
+    def tools(self):
+        tools = [
+            "alsa-utils",
+            "bc",
+            "bind9-dnsutils",
+            "bridge-utils",
+            "cryptsetup-bin",
+            "curl",
+            "dc",
+            "dmidecode",
+            "elpa-auto-complete",
+            "elpa-xcscope",
+            "emacs",
+            "git",
+            "htop",
+            "imagemagick",
+            "ipmitool",
+            "jnettop",
+            "lftp",
+            "lm-sensors",
+            "lshw",
+            "lsscsi",
+            "lvm2",
+            "memtest86+",
+            "m4",
+            "net-tools",
+            "nfs-common",
+            "nmap",
+            "parted",
+            "qemu-kvm",
+            "rsync",
+            "smartmontools",
+            "sysstat",
+            "tmux",
+            "units",
+            "vim",
+            "vnstat",
+            "whois",
+            "zsh",
+        ]
+        self._apt_install(tools)
+
+    def vmtools(self):
+        !!apt-get -y update
+        !!apt-get -y install libvirt-clients libvirt-daemon libvirt-daemon-system
+        !!apt-get -y install virt-top virtinst sysv-rc-conf
+        # This might require deb http://ftp.us.debian.org/debian/ buster main contrib non-free
+        !!apt-get -y install vmdebootstrap
+        !!apt -y autoremove
+
+    def mdtools(self):
+        !!apt-get -y update
+        !!apt-get -y install parted mdadm lvm2
+        !!apt -y autoremove
+
+    def mdpost(self):
+        pass
+
+    def console(self):
+        !!cp -p /etc/default/console-setup /etc/default/console-setup.urm-$(date +%Y%m%d%H%M%S)
+        !!sed -i 's,^CODESET=.*,CODESET="guess",' /etc/default/console-setup
+        !!sed -i 's,^FONTFACE=.*,FONTFACE="Terminus",' /etc/default/console-setup
+        !!sed -i 's,^FONTSIZE=.*,FONTSIZE="16x32",' /etc/default/console-setup
+        !!/etc/init.d/console-setup.sh restart
+
+    def ping(self):
+        target = !S {target}
+        retval = subprocess.call(
+            'ping -4 -c1 -q -W2 {}'.format(target).split(),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL)
+        if retval == 0:
+            print('{} is up'.format(target))
+        else:
+            print('{} is down'.format(target))
+        return retval == 0
+
+    def reboot(self):
+        global subprocess
+        target = !S {target}
+        !uptime
+        !!/sbin/reboot
+        pingable = self.ping()
+        if pingable:
+            while self.ping():
+                print('Waiting for {} to go down'.format(target))
+                time.sleep(2)
+        while not self.ping():
+            print('Waiting for {} to come up'.format(target))
+            time.sleep(2)
+        INFO('%s has rebooted', target)
+
+    def systemd(self):
+        '''Remove systemd.'''
+        self.upgrade()
+        !!apt-get -y purge dconf-service libnss-systemd
+        !!apt-get -y install sysv-rc sysvinit-core sysvinit-utils
+        !!dpkg --list | fgrep sysvinit
+        !!dpkg --list | fgrep systemd
+        self.reboot()
+        INFO('Waiting 10 seconds for sshd to come online')
+        time.sleep(10)
+        !!apt-get -y remove --purge --auto-remove systemd
+        !!rm -rf /run/systemd/system/
+        !!tee /etc/apt/preferences.d/systemd <<EOF
+Package: systemd
+Pin: release *
+Pin-Priority: -1
+
+Package: *systemd*
+Pin: release *
+Pin-Priority: -1
+EOF
+        !!dpkg --list | fgrep sysvinit
+        !!dpkg --list | fgrep systemd
+
+    def grub(self):
+        '''Configure grub'''
+        !!cp -p /etc/default/grub /etc/default/grub.urm-$(date +%Y%m%d%H%M%S)
+        cmdline='audit=0 net.ifnames=0 biosdevname=0'
+        !!sed -i 's,^GRUB_CMDLINE_LINUX=.*,GRUB_CMDLINE_LINUX="{cmdline}",' /etc/default/grub
+        !!update-grub
+
+    def network(self):
+        '''Configure network'''
+        networks = !S {networks}
+        !!cp -p /etc/network/interfaces /etc/network/interfaces.urm-$(date +%Y%m%d%H%M%S)
+        for idx, network in enumerate(networks):
+            gateway = None
+            kind = 'static'
+            if len(network) == 2:
+                interface, kind = network
+            elif len(network) == 3:
+                interface, address, mask = network
+            elif len(network) == 4:
+                interface, address, mask, gateway = network
+            else:
+                print('network description must have interface, address, mask,'
+                      ' and (optionally) gateway; or interface,dhcp: {}'.
+                      format(network))
+                return
+            if idx == 0 and gateway is None and kind == 'static':
+                print('first network description must have interface, address,'
+                      ' mask, and gateway: {}'.format(network))
+                return
+            if idx == 0:
+                if kind == 'dhcp':
+                    !!tee /etc/network/interfaces <<EOF
+auto lo
+iface lo inet loopback
+
+auto br0
+iface br0 inet {kind}
+  bridge_ports {interface}
+  bridge_stp off
+  bridge_fd 0
+  bridge_maxwait 0
+EOF
+                else:
+                    !!tee /etc/network/interfaces <<EOF
+auto lo
+iface lo inet loopback
+
+auto br0
+iface br0 inet {kind}
+  address {address}
+  netmask {mask}
+  gateway {gateway}
+  bridge_ports {interface}
+  bridge_stp off
+  bridge_fd 0
+  bridge_maxwait 0
+EOF
+            else:
+                if kind == 'dhcp':
+                    !!tee -a /etc/network/interfaces <<EOF
+
+auto {interface}
+iface {interface} inet {kind}
+EOF
+                else:
+                    !!tee -a /etc/network/interfaces <<EOF
+
+auto {interface}
+iface {interface} inet {kind}
+address {address}
+netmask {mask}
+EOF
+                    if gateway is not None:
+                        !!tee -a /etc/network/interfaces <<EOF
+gateway {gateway}
+EOF
+
+
+    def sudo(self):
+        '''Configure sudo for user and password-less root'''
+        !!cp -p /etc/sudoers /etc/sudoers.urm-$(date +%Y%m%d%H%M%S)
+        !!cp -p /etc/group /etc/group.urm-$(date +%Y%m%d%H%M%S)
+        !!apt-get update
+        !!apt-get install -y sudo
+        !!sed -i 's,^\(%sudo.*\) ALL$,\\1 NOPASSWD:ALL,' /etc/sudoers
+        !!usermod -G sudo -a $(whoami)
+
+    def zsh(self):
+        '''Use zsh at the shell for the default user'''
+        !!apt-get -y update
+        !!apt-get install -y zsh
+        !!chsh -s /bin/zsh $(whoami)
+
+    def crontab(self):
+        global re
+        '''Configure crontab'''
+        file = !!cat /etc/crontab
+        for line in file:
+            if re.search(r'uptime', line):
+                return
+        !!tee -a /etc/crontab <<EOF
+
+*/10 *   * * * root logger "$(uptime)"
+EOF
+
+    def rng(self):
+        usb = !lsusb | fgrep 04d8:f5fe
+        if len(usb) == 0:
+            print('No TrueRNG device found')
+            return
+        !!apt-get install -y rng-tools-debian
+        !!tee /etc/udev/rules.d/99-TrueRNG.rules <<EOF
+SUBSYSTEM=="tty", ATTRS{product}=="TrueRNG", SYMLINK+="hwrng", RUN+="/bin/stty raw -echo -ixoff -F /dev/%k speed 3000000"
+ATTRS{idVendor}=="04d8", ATTRS{idProduct}=="f5fe", ENV{ID_MM_DEVICE_IGNORE}="1"
+EOF
+        !!cp -p /etc/default/rng-tools-debian /etc/default/rng-tools-debian.urm-$(date +%Y%m%d%H%M%S)
+        !!tee /etc/default/rng-tools-debian <<EOF
+HRNGDEVICE=/dev/hwrng
+RNGDOPTIONS="--fill-watermark=90% --feed-interval=10"
+EOF
+        !!udevadm control --reload-rules
+        time.sleep(10)
+        !!udevadm trigger
+        time.sleep(10)
+        !!/etc/init.d/rng-tools-debian restart
+
+    def ntp(self):
+        networks = !S {networks}
+        address = networks[0][1]
+        if address == 'dhcp':
+            address = '0.0.0.0'
+        !!apt-get install -y ntp ntpdate
+        !!cp -p /etc/ntp.conf /etc/ntp.conf.urm-$(date +%Y%m%d%H%M%S)
+        !!tee /etc/ntp.conf <<EOF
+driftfile /var/lib/ntp/ntp.drift
+leapfile /usr/share/zoneinfo/leap-seconds.list
+EOF
+        ntps = !S {ntps}
+        print(ntps)
+        for ntp in ntps:
+            print(ntp)
+            label, host = ntp
+            !!tee -a /etc/ntp.conf <<EOF
+{label} {host} iburst
+EOF
+        !!tee -a /etc/ntp.conf <<EOF
+interface ignore all
+interface listen {address}
+interface listen 127.0.0.1
+interface listen ::1
+
+restrict -4 default kod notrap nomodify nopeer noquery limited
+restrict -6 default kod notrap nomodify nopeer noquery limited
+restrict 127.0.0.1
+restrict ::1
+
+# Needed for adding pool entries
+restrict source notrap nomodify noquery
+disable monitor
+discard minimum 0
+EOF
+        !!/etc/init.d/ntp restart
+
+    def passwd(self):
+        passwords = !S {passwords}
+        for password in passwords:
+            !!chpasswd -e <<EOF
+{password}
+EOF
+
+    def sshd(self):
+        !!cp -p /etc/ssh/sshd_config /etc/ssh/sshd_config.urm-$(date +%Y%m%d%H%M%S)
+        !!sed -i 's,^#\?PermitRootLogin.*,PermitRootLogin yes,' /etc/ssh/sshd_config
+        port = !S {port}
+        if port is not None:
+            !!sed -i 's,^#\?Port.*,Port {port},' /etc/ssh/sshd_config
+        !!/etc/init.d/ssh restart
+
+    def ssh(self):
+        global os
+        keys = !S {keys}
+        whoami = !whoami
+        for user, dir in [("root", '/root'),
+                          (whoami[0], os.path.join('/home', whoami[0]))]:
+            !!mkdir {dir}/.ssh
+            !!chown {user}.{user} {dir}/.ssh
+            !!chmod 700 {dir}/.ssh
+            !!touch {dir}/.ssh/authorized_keys
+            !!chown {user}.{user} {dir}/.ssh/authorized_keys
+            !!chmod 600 {dir}/.ssh/authorized_keys
+            for key in keys:
+                check = !!fgrep '{key}' {dir}/.ssh/authorized_keys
+                if len(check) != 0:
+                    print('Key already added')
+                    continue
+                !!tee -a {dir}/.ssh/authorized_keys <<EOF
+{key}
+EOF
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='custom installation')
+    parser.add_argument('--systemd', action='store_true',
+                        default=False, help='Remove systemd from target')
+    parser.add_argument('--bash', action='store_true',
+                        default=False, help='Customize /etc/bash.bashrc')
+    parser.add_argument('--localapt', action='store_true',
+                        default=False, help='Use local cache for apt')
+    parser.add_argument('--upgrade', action='store_true',
+                        default=False, help='Upgrade target using apt')
+    parser.add_argument('--reboot', action='store_true',
+                        default=False, help='Reboot target')
+    parser.add_argument('--x11laptop', action='store_true',
+                        default=False, help='Install X11 for laptop')
+    parser.add_argument('--laptop', action='store_true',
+                        default=False, help='Specials for t470p')
+    parser.add_argument('--tools', action='store_true',
+                        default=False, help='Install common tools to target')
+    parser.add_argument('--vmtools', action='store_true',
+                        default=False, help='Install VM tools to target')
+    parser.add_argument('--mdtools', action='store_true',
+                        default=False, help='Install mdadm and related tools to target')
+    parser.add_argument('--mdpost', action='store_true',
+                        default=False, help='Setup mdadm configuration on target')
+    parser.add_argument('--console', action='store_true',
+                        default=False, help='Make console font larger')
+    parser.add_argument('--grub', action='store_true',
+                        default=False, help='Configure grub on target')
+    parser.add_argument('--sudo', action='store_true', default=False,
+                        help='Install and configure sudo on target')
+    parser.add_argument('--zsh', action='store_true', default=False,
+                        help='Install and configure zsh on target')
+    parser.add_argument('--crontab', action='store_true', default=False,
+                        help='Configure crontab on target')
+    parser.add_argument('--network', action='store_true', default=False,
+                        help='Configure network on target')
+    parser.add_argument('--rng', action='store_true', default=False,
+                        help='Configure TrueRNG device on target')
+    parser.add_argument('--ntp', action='store_true', default=False,
+                        help='Configure NTP device on target')
+    parser.add_argument('--passwd', action='store_true', default=False,
+                        help='Configure passwords for key users')
+    parser.add_argument('--sshd', action='store_true', default=False,
+                        help='Configure sshd port and root access')
+    parser.add_argument('--ssh', action='store_true', default=False,
+                        help='Configure ssh authorized_keys')
+    parser.add_argument('--fonts', action='store_true', default=False,
+                        help='Add non-X11 fonts')
+    parser.add_argument('--ping', action='store_true',
+                        default=False, help='Ping target')
+    args = parser.parse_args()
+
+    install = Install()
+    if args.bash:
+        install.bash()
+    if args.localapt:
+        install.localapt()
+    if args.upgrade:
+        install.upgrade()
+    if args.ping:
+        install.ping()
+    if args.reboot:
+        install.reboot()
+    if args.systemd:
+        install.systemd()
+    if args.x11laptop:
+        install.x11laptop()
+    if args.laptop:
+        install.laptop()
+    if args.tools:
+        install.tools()
+    if args.vmtools:
+        install.vmtools()
+    if args.mdtools:
+        install.mdtools()
+    if args.mdpost:
+        install.mdpost()
+    if args.console:
+        install.console()
+    if args.grub:
+        install.grub()
+    if args.sudo:
+        install.sudo()
+    if args.zsh:
+        install.zsh()
+    if args.crontab:
+        install.crontab()
+    if args.network:
+        install.network()
+    if args.rng:
+        install.rng()
+    if args.ntp:
+        install.ntp()
+    if args.passwd:
+        install.passwd()
+    if args.sshd:
+        install.sshd()
+    if args.ssh:
+        install.ssh()
+    if args.fonts:
+        install.fonts()

@@ -48,9 +48,18 @@ _ssh_ = urm.ssh.Ssh(target, unique_target, config_dict, mqueue, debug=%s)
                     'global _ssh_\n'
                 insert_global = False
 
+            if re.search(r'^\s*#', line):
+                output_text += line + '\n'
+                continue
+
             if eof_line is None:
                 # Transform print( -> _ssh_.INFO(
                 line = re.sub(r'([^a-z])print\(', r'\1_ssh_.INFO(', line)
+
+                # Transform !S into a variable substitution.
+                line = re.sub(r'!S\s*(.*)',
+                              r'_ssh_.substitute("\1", 1, special=True)',
+                              line)
 
                 # Determine the method to use for ! and !!
                 if re.search(r'^!!(.*)', lline) or re.search(r'= ?!!(.*)',
@@ -72,10 +81,14 @@ _ssh_ = urm.ssh.Ssh(target, unique_target, config_dict, mqueue, debug=%s)
             # Transform !, !!, and :
             if method is not None:
                 if eof_line is not None:
+                    # Pre-escape all backslashes before passing to re.sub.
+                    lines = re.sub(r'\\', r'\\\\', lines)
+                    INFO("eof_line='%s'" % eof_line)
                     INFO("lines='%s'" % lines)
                     line = re.sub(r'!?!(.*)',
                                   '_ssh_.' + method +
-                                  "('''\\1''', input='''" + lines + "''')",
+                                  "('''\\1''', input_text='''" + lines +
+                                  "''')",
                                   eof_line)
                     lines = ''
                 else:

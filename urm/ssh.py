@@ -5,12 +5,12 @@
 import inspect
 import ipaddress
 import logging
-import os.path
+import os
+import re
 import select
 import socket
 import sys
 import time
-import traceback
 
 import dns.resolver
 import paramiko
@@ -41,6 +41,7 @@ class Ssh():
         self.password = self.config_dict.get('password', None)
         self.initialpassword = self.config_dict.get('initialpassword', None)
         self.timeout = self.config_dict.get('timeout', 5)
+        self.INFO('target=%s username=%s', self.target, self.username)
 
         # True if an ssh connection has been established.
         self.connected = False
@@ -55,14 +56,17 @@ class Ssh():
         self.sudo = 'unknown'
         self.sudo_password = None
 
+        if self.config_dict['target_ip'] is not None:
+            self.INFO('Replacing target=%s with target=%s', self.target,
+                      self.config_dict['target_ip'])
+            self.target = self.config_dict['target_ip']
+
         # Check the validity of the target, which must be an IP address or a
         # dns-resolvable hostname.
         self._verify_target()
 
         # Open the connection
         self._connect()
-
-        self.INFO("target=%s", target)
 
     def queue_put(self, worker_index, message_type, message, args=None,
                   depth=1):
@@ -108,6 +112,7 @@ class Ssh():
         '''Make sure the target is either an ip address or a valid DNS name.
         Raise informative exceptions if not.'''
 
+
         # Is this an IP address?
         is_ip_address = True
         try:
@@ -137,12 +142,7 @@ class Ssh():
     @staticmethod
     def format_exception(prefix, msg):
         _, _, exc_tb = sys.exc_info()
-        tback = traceback.extract_tb(exc_tb, limit=5)
-        stack = ''
-        for filename, lineno, _, _ in tback:
-            if stack != '':
-                stack += '; '
-            stack += '%s:%s' % (os.path.basename(filename), lineno)
+        stack = urm.log.PDLog.get_stack_from_traceback(exc_tb)
         return prefix + ': ' + msg + ' (%s)' % stack
 
     def _try_connect(self, target, username, port, password=None):
@@ -207,8 +207,13 @@ class Ssh():
                     buffer += channel.recv(4096).decode('utf-8')
                 except socket.timeout:
                     time.sleep(.1)
-            while '\n' in buffer:
-                line, buffer = buffer.split('\n', 1)
+            while '\n' in buffer or '\r' in buffer:
+                try:
+                    line, buffer = re.split('[\r\n]+', buffer, 1)
+                except ValueError:
+                    yield re.sub(r'[\n\r]*', '', buffer)
+                    buffer = ''
+                    break
                 yield line
         try:
             buffer += channel.recv_stderr(4096).decode('utf-8')
@@ -252,12 +257,12 @@ class Ssh():
         self.queue_put(self.unique_target, urm.pool.Pool.MT_COMMAND, command)
         return self.run(command, input_text=input_text, sudo=True, depth=2)
 
-    def _substitute(self, target, depth):
+    def substitute(self, target, depth, special=False):
         class FormatDict(dict):
             '''str.format will raise KeyError, so we replace the dictionary
             with this class and use format_map instead.'''
             def __missing__(self, key):
-                return key
+                return '{' + key + '}'
 
         result = None
         frame = inspect.currentframe()
@@ -271,8 +276,20 @@ class Ssh():
                 variables.update(frame.f_back.f_back.f_back.f_locals)
             else:
                 raise Exception('Unsupported depth={}'.format(depth))
-            result = target.format_map(variables)
-            self.INFO('result=%s', result)
+
+            mapdict = FormatDict({**self.config_dict, **variables})
+
+            result = None
+            if special and target[0] == '{' and target[-1] == '}' and \
+               len(re.findall(r'{', target)) == 1:
+                # Maintain type
+                for key, value in mapdict.items():
+                    if key == target[1:-1]:
+                        result = value
+                        break
+
+            if result is None:
+                result = target.format_map(mapdict)
         except ValueError as err:
             pos = int(err.args[0].split()[-1])
             start, stop = max(0, pos - 20), max(pos + 20, len(target))
@@ -294,25 +311,28 @@ class Ssh():
     def run(self, command, input_text=None, sudo=False, depth=1):
         assert self.connected
         assert not self.running
-        if self.sudo == 'unknown':
+        if sudo and self.sudo == 'unknown':
             self._determine_sudo()
 
-        self.INFO('BEFORE command=%s', command)
-        command = self._substitute(command, depth + 1)
-        self.INFO('AFTER command=%s', command)
+        command = self.substitute(command, depth + 1)
         if command is None:
             if self.queue is not None:
                 self.queue_put(self.unique_target, urm.pool.Pool.MT_STATUS,
                                'no command')
             return []
         if input_text:
-            input_text = self._substitute(input_text, depth + 1)
+            input_text = self.substitute(input_text, depth + 1)
             if input_text is None:
                 if self.queue is not None:
                     self.queue_put(self.unique_target, urm.pool.Pool.MT_STATUS,
                                    'no input')
                 return []
 
+        transport = self.client.get_transport()
+        if transport is None or not transport.is_active():
+            time.sleep(1)
+            self._connect()
+            time.sleep(1)
         channel = self.client.get_transport().open_session()
 
         if sudo:

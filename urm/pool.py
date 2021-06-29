@@ -8,6 +8,7 @@ import queue
 import sys
 import time
 import traceback
+import yaml
 
 import urm.parser
 import urm.ssh
@@ -80,6 +81,12 @@ class Pool():
     SSH_PORT_KEYS = ['ssh-port', 'port']
     USERNAME_KEYS = ['username']
     PASSWORD_KEYS = ['password', 'initialpassword']
+    APT_KEYS = ['apt']
+    NETWORKS_KEYS = ['networks']
+    PASSWORDS_KEYS = ['passwords']
+    KEYS_KEYS = ['keys']
+    NTP_KEYS = ['ntps']
+    IP_KEYS = ['ip']
 
     # Message types
     MT_COMMAND = 0
@@ -95,7 +102,7 @@ class Pool():
     MT_MAX_MESSAGE_TYPE = 9
 
     def __init__(self, config, target_list, max_workers=4, dry_run=False,
-                 debug=False):
+                 debug=False, ip=None):
         self.config = config
         self.target_list = config.expand_target_list(target_list)
         self.max_workers = max_workers
@@ -103,6 +110,7 @@ class Pool():
         self.target_config = dict()
         self.dry_run = dry_run
         self.debug = debug
+        self.ip = ip
 
         for target in self.target_list:
             if target not in self.target_config:
@@ -138,11 +146,50 @@ class Pool():
                                                       None, str)
         timeout = self.config.get_value_with_default(target, Pool.TIMEOUT_KEYS,
                                                      Pool.TIMEOUT, int)
+        apt = self.config.get_value_with_default(target, Pool.APT_KEYS,
+                                                 None, str)
+
+        networks = self.config.get_value_with_default(target,
+                                                      Pool.NETWORKS_KEYS,
+                                                      None, str)
+        if networks is not None and networks[0] == '[':
+            networks = yaml.load(networks, Loader=yaml.BaseLoader)
+
+        passwords = self.config.get_value_with_default(target,
+                                                       Pool.PASSWORDS_KEYS,
+                                                       None, str)
+        if passwords is not None and passwords[0] == '[':
+            passwords = yaml.load(passwords, Loader=yaml.BaseLoader)
+
+        keys = self.config.get_value_with_default(target,
+                                                  Pool.KEYS_KEYS,
+                                                  None, str)
+        if keys is not None and keys[0] == '[':
+            keys = yaml.load(keys, Loader=yaml.BaseLoader)
+
+        ntps = self.config.get_value_with_default(target, Pool.NTP_KEYS,
+                                                  None, str)
+        if ntps is not None and ntps[0] == '[':
+            ntps = yaml.load(ntps, Loader=yaml.BaseLoader)
+
+        if self.ip is not None:
+            # Allow a --ip argument to override the .urm configuration file.
+            ip = self.ip
+        else:
+            ip = self.config.get_value_with_default(target, Pool.IP_KEYS,
+                                                    None, str)
+
         return {'target': target,
                 'port': port,
                 'username': username,
                 'password': password,
-                'timeout': timeout}
+                'timeout': timeout,
+                'apt': apt,
+                'networks': networks,
+                'passwords': passwords,
+                'keys': keys,
+                'ntps': ntps,
+                'target_ip': ip if ip is not None else target}
 
     @staticmethod
     def _done_callback(target, future, callback):
@@ -192,9 +239,14 @@ class Pool():
                     target_index += 1
 
                 # Start the future.
-                future = executor.submit(self._worker, target, unique_target,
-                                         self.target_config[target],
-                                         mqueue, command, parser.command())
+                future = executor.submit(
+                    self._worker,
+                    target,
+                    unique_target,
+                    self.target_config[target],
+                    mqueue,
+                    command,
+                    parser.command())
                 jobs[unique_target] = future
 
                 # Add in a final callback to capture any errors from the

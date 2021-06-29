@@ -23,6 +23,7 @@ def main():
                         default=False, help='Display remote debugging info')
     parser.add_argument('--username', default=None, help='Username')
     parser.add_argument('--password', default=None, help='Password')
+    parser.add_argument('--ip', default=None, help='Temporary IP')
     parser.add_argument('target', type=str, nargs='?',
                         help='Target host or set of hosts')
     parser.add_argument('command', type=str, nargs=argparse.REMAINDER,
@@ -53,7 +54,9 @@ def main():
     target_list = config.expand_target_list(target_list)
 
     INFO('target_list=%s', target_list)
+    if args.ip is not None and len(target_list) > 1:
+        FATAL('The --ip argument is only valid for one target')
     pool = urm.pool.Pool(config, target_list, dry_run=args.dry_run,
-                         debug=args.debug)
+                         debug=args.debug, ip=args.ip)
     pool.run(' '.join(args.command))
     return 0

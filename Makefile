@@ -6,7 +6,7 @@
 DLIST:=missing-function-docstring,missing-module-docstring
 DLIST:=$(DLIST),missing-class-docstring,too-few-public-methods
 DLIST:=$(DLIST),too-many-arguments,too-many-locals,too-many-instance-attributes
-DLIST:=$(DLIST),too-many-branches
+DLIST:=$(DLIST),too-many-branches,too-many-statements
 
 lint:
 	pep8 bin/urm urm/*.py

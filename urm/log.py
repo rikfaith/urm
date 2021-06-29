@@ -124,13 +124,18 @@ class PDLog():
         logging.error(message + ': ' + exc[0].strip(), *args, **kwargs)
 
     @staticmethod
-    def traceback(exception, message, *args, **kwargs):
-        tback = traceback.extract_tb(exception, limit=5)
+    def get_stack_from_traceback(exc_traceback):
+        tback = traceback.extract_tb(exc_traceback, limit=5)
         stack = ''
         for filename, lineno, _, _ in tback:
             if stack != '':
                 stack += '; '
             stack += '%s:%s' % (os.path.basename(filename), lineno)
+        return stack
+
+    @staticmethod
+    def traceback(exc_traceback, message, *args, **kwargs):
+        stack = PDLog.get_stack_from_traceback(exc_traceback)
         logging.error(message + ' (%s)' % stack, *args, **kwargs)
 
 
